@@ -59,6 +59,15 @@ static SyncState LoadState(string path)
             state.Requested = null;
         }
 
+        // Items without FirstSeenUtc predate the grace/reconcile fields, so they were already
+        // requested under the old logic — flag them so they aren't re-requested or grace-deferred.
+        foreach (var info in state.Tracked.Values)
+        {
+            info.RequestedSeasons ??= new();
+            if (info.FirstSeenUtc is null && !info.Requested)
+                info.Requested = true;
+        }
+
         return state;
     }
     catch
@@ -91,10 +100,51 @@ static async Task RunSyncAsync(
     var totalDeleted = 0;
     var totalErrors = 0;
 
+    var nowUtc = DateTime.UtcNow;
+    var reconcileDue = config.ReconcileScanMinutes > 0
+        && (state.LastReconcileScan is not DateTime lastRecon
+            || nowUtc - lastRecon >= TimeSpan.FromMinutes(config.ReconcileScanMinutes))
+        && tracked.Values.Any(v => !v.ReadyMarked);
+
+    async Task RequestInitialAsync(SimklItem item, string key, List<int> seasons, string seasonDesc, TrackedItem info)
+    {
+        var seasonNote = item.MediaType == "movie"
+            ? ""
+            : $" seasons[{string.Join(",", seasons)}] ({seasonDesc})";
+
+        info.Requested = true;
+        info.RequestedSeasons = seasons.ToList();
+
+        var mediaStatus = await jellyseerr.GetMediaStatusAsync(item.TmdbId, item.MediaType);
+        if (mediaStatus > MediaStatus.Unknown)
+        {
+            totalTracked++;
+            Console.WriteLine($"  SKIP  [{item.MediaType,-5}] {item.Title} ({item.Year}) — already in Jellyseerr ({MediaStatus.Name(mediaStatus)}); tracking {key}");
+        }
+        else if (config.DryRun)
+        {
+            totalTracked++;
+            Console.WriteLine($"  DRYRUN [{item.MediaType,-5}] {item.Title} ({item.Year}){seasonNote} — would request; tracking {key}");
+        }
+        else
+        {
+            var created = await jellyseerr.RequestMediaAsync(item, seasons);
+            if (created)
+            {
+                totalCreated++;
+                Console.WriteLine($"  REQ   [{item.MediaType,-5}] {item.Title} ({item.Year}){seasonNote} — tracking {key}");
+            }
+            else
+            {
+                totalTracked++;
+                Console.WriteLine($"  SKIP  [{item.MediaType,-5}] {item.Title} ({item.Year}) — already requested; tracking {key}");
+            }
+        }
+    }
+
     foreach (var (activityType, urlType, jellyseerrType) in types)
     {
         var current = activities.AllFor(activityType);
-        if (current is null) continue;
 
         DateTime? last = null;
         if (state.Cursors.TryGetValue(activityType, out var cursor) &&
@@ -103,10 +153,12 @@ static async Task RunSyncAsync(
             last = parsed;
         }
 
-        if (last is not null && current <= last) continue;
+        var advanced = current is not null && (last is null || current > last);
+        if (!advanced && !reconcileDue) continue;
 
         changedAny = true;
-        Console.WriteLine($"\n[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {activityType} changed — syncing...");
+        var reason = advanced ? "changed" : "memo reconcile";
+        Console.WriteLine($"\n[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] {activityType} {reason} — syncing...");
 
         var all = await simkl.GetAllItemsAsync(urlType, jellyseerrType);
         var present = all.Select(i => i.TmdbId).ToHashSet();
@@ -123,48 +175,69 @@ static async Task RunSyncAsync(
             if (ct.IsCancellationRequested) break;
 
             var key = $"{urlType}:{item.TmdbId}";
-            if (tracked.ContainsKey(key)) continue;
+
+            if (!tracked.TryGetValue(key, out var info))
+            {
+                info = new TrackedItem { FirstSeenUtc = nowUtc, Memo = item.Memo };
+                tracked[key] = info;
+            }
+            else
+            {
+                info.Memo = item.Memo;
+                info.FirstSeenUtc ??= nowUtc;
+            }
 
             try
             {
-                var seasons = new List<int>();
-                var seasonDesc = "";
-                if (item.MediaType != "movie")
+                if (item.MediaType == "movie")
                 {
-                    var available = await jellyseerr.GetSeasonNumbersAsync(item.TmdbId);
-                    (seasons, seasonDesc) = SeasonSelector.Select(item.Memo, available);
-                }
-
-                var seasonNote = item.MediaType == "movie"
-                    ? ""
-                    : $" seasons[{string.Join(",", seasons)}] ({seasonDesc})";
-
-                var mediaStatus = await jellyseerr.GetMediaStatusAsync(item.TmdbId, item.MediaType);
-                if (mediaStatus > MediaStatus.Unknown)
-                {
-                    tracked[key] = new TrackedItem { Memo = item.Memo };
-                    totalTracked++;
-                    Console.WriteLine($"  SKIP  [{item.MediaType,-5}] {item.Title} ({item.Year}) — already in Jellyseerr ({MediaStatus.Name(mediaStatus)}); tracking {key}");
-                }
-                else if (config.DryRun)
-                {
-                    tracked[key] = new TrackedItem { Memo = item.Memo };
-                    totalTracked++;
-                    Console.WriteLine($"  DRYRUN [{item.MediaType,-5}] {item.Title} ({item.Year}){seasonNote} — would request; tracking {key}");
+                    if (!info.Requested)
+                        await RequestInitialAsync(item, key, new List<int>(), "", info);
                 }
                 else
                 {
-                    var created = await jellyseerr.RequestMediaAsync(item, seasons);
-                    tracked[key] = new TrackedItem { Memo = item.Memo };
-                    if (created)
+                    var available = await jellyseerr.GetSeasonNumbersAsync(item.TmdbId);
+                    var (desiredSeasons, seasonDesc) = SeasonSelector.Select(item.Memo, available);
+
+                    if (!info.Requested)
                     {
-                        totalCreated++;
-                        Console.WriteLine($"  REQ   [{item.MediaType,-5}] {item.Title} ({item.Year}){seasonNote} — tracking {key}");
+                        var memoPresent = !string.IsNullOrWhiteSpace(item.Memo);
+                        var graceElapsed = config.MemoGraceMinutes <= 0
+                            || nowUtc - (info.FirstSeenUtc ?? nowUtc) >= TimeSpan.FromMinutes(config.MemoGraceMinutes);
+
+                        if (!memoPresent && !graceElapsed)
+                        {
+                            totalTracked++;
+                            Console.WriteLine($"  WAIT  [{item.MediaType,-5}] {item.Title} ({item.Year}) — awaiting memo (grace {config.MemoGraceMinutes}m); tracking {key}");
+                        }
+                        else
+                        {
+                            await RequestInitialAsync(item, key, desiredSeasons, seasonDesc, info);
+                        }
                     }
-                    else
+                    else if (info.RequestedSeasons.Count > 0)
                     {
-                        totalTracked++;
-                        Console.WriteLine($"  SKIP  [{item.MediaType,-5}] {item.Title} ({item.Year}) — already requested; tracking {key}");
+                        var newSeasons = desiredSeasons
+                            .Where(s => !info.RequestedSeasons.Contains(s))
+                            .OrderBy(s => s)
+                            .ToList();
+
+                        if (newSeasons.Count > 0)
+                        {
+                            var note = $" seasons[{string.Join(",", newSeasons)}] ({seasonDesc})";
+                            if (config.DryRun)
+                            {
+                                Console.WriteLine($"  DRYRUN RECON [{item.MediaType,-5}] {item.Title} ({item.Year}){note} — would add seasons for {key}");
+                            }
+                            else
+                            {
+                                var created = await jellyseerr.RequestMediaAsync(item, newSeasons);
+                                info.RequestedSeasons = info.RequestedSeasons.Concat(newSeasons).Distinct().OrderBy(s => s).ToList();
+                                totalCreated += created ? 1 : 0;
+                                var verb = created ? "added seasons" : "seasons already present";
+                                Console.WriteLine($"  RECON [{item.MediaType,-5}] {item.Title} ({item.Year}){note} — {verb} for {key}");
+                            }
+                        }
                     }
                 }
             }
@@ -208,8 +281,11 @@ static async Task RunSyncAsync(
             await Task.Delay(300, ct);
         }
 
-        state.Cursors[activityType] = current.Value.ToString("o");
+        if (advanced)
+            state.Cursors[activityType] = current!.Value.ToString("o");
     }
+
+    if (reconcileDue) state.LastReconcileScan = nowUtc;
 
     if (!changedAny)
     {
@@ -303,6 +379,7 @@ class SyncState
     public Dictionary<string, string> Cursors { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, TrackedItem> Tracked { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public DateTime? LastAvailabilityScan { get; set; }
+    public DateTime? LastReconcileScan { get; set; }
 
     // Legacy field kept for one-time migration from older state files.
     public List<string>? Requested { get; set; }
@@ -311,6 +388,9 @@ class SyncState
 class TrackedItem
 {
     public string? Memo { get; set; }
+    public DateTime? FirstSeenUtc { get; set; }
+    public bool Requested { get; set; }
+    public List<int> RequestedSeasons { get; set; } = new();
     public bool ReadyMarked { get; set; }
     public string? ReadyDate { get; set; }
 }

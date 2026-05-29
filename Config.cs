@@ -30,6 +30,20 @@ public class AppConfig
     /// <summary>Memo marker prefix written when an item becomes available</summary>
     public string ReadyMemoPrefix { get; init; } = "ReadyToWatch";
 
+    /// <summary>
+    /// Grace period (minutes) after first seeing a TV item in a synced status before requesting
+    /// the default season when no memo is present yet. Gives you time to add a season memo after
+    /// adding to Plan to Watch. If a memo is already present, the request is made immediately. 0 disables.
+    /// </summary>
+    public int MemoGraceMinutes { get; init; } = 15;
+
+    /// <summary>
+    /// How often (minutes) to re-read SIMKL memos for tracked-but-incomplete items so memos added or
+    /// edited after Plan to Watch are picked up (memo edits don't bump SIMKL activities). Additive only:
+    /// new seasons named in the memo get requested. 0 disables memo reconciliation.
+    /// </summary>
+    public int ReconcileScanMinutes { get; init; } = 30;
+
     // Resolved at runtime — not in appsettings.json
     public string ConfigDir { get; private set; } = "";
 

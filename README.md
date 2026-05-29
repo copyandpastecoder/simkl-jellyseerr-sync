@@ -45,7 +45,11 @@ Rules:
 - Seasons are clamped to those that actually exist; specials (season 0) are excluded.
 - Only the **first line** is read — put any other notes on later lines.
 
-> **Important:** SIMKL has no "memo changed" signal, so the tool reads the memo when the show first enters Plan to Watch. **Set the memo *before* (or at the same time as) adding the show to Plan to Watch.** Editing the memo after the show is already requested won't re-scope the existing request.
+> **Adding the memo after Plan to Watch is fine.** SIMKL has no "memo changed" signal, but the tool handles this two ways:
+> - **Grace period** — when a show first enters Plan to Watch with no memo yet, the tool waits `MemoGraceMinutes` (default 15) before requesting the default season, giving you time to type a directive.
+> - **Reconciliation** — every `ReconcileScanMinutes` (default 30) the tool re-reads memos for tracked-but-incomplete shows and requests any **additional** seasons your memo now names.
+>
+> Reconciliation is **additive only**: it can add seasons, but it can't un-request one already sent. So if you want *fewer* than the default, set the memo before adding to Plan to Watch.
 
 ---
 
@@ -100,6 +104,8 @@ Edit `appsettings.json`:
   "MarkReadyToWatch":  true,
   "AvailabilityCheckHours": 24,
   "ReadyMemoPrefix":   "ReadyToWatch",
+  "MemoGraceMinutes":  15,
+  "ReconcileScanMinutes": 30,
   "DryRun":            false
 }
 ```
@@ -116,6 +122,8 @@ Edit `appsettings.json`:
 | `MarkReadyToWatch` | Write a `ReadyToWatch <date>` memo when a download is fully available (default `true`) |
 | `AvailabilityCheckHours` | How often to scan tracked items for completed downloads, in hours (default `24`; `0` disables) |
 | `ReadyMemoPrefix` | The marker text written to the memo (default `ReadyToWatch`) |
+| `MemoGraceMinutes` | Wait this long after a TV show enters Plan to Watch before requesting the default season when no memo is set yet, so you have time to add one (default `15`; `0` requests immediately) |
+| `ReconcileScanMinutes` | How often to re-read SIMKL memos for tracked-but-incomplete shows and request any newly-named seasons (default `30`; `0` disables) |
 | `DryRun` | Set `true` to log what would be requested/deleted/marked without changing anything |
 
 ### 4. Add to docker-compose.yml
