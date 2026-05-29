@@ -298,7 +298,11 @@ static async Task RunSyncAsync(
 
     await RunAvailabilityScanAsync(config, simkl, jellyseerr, state, ct);
 
-    SaveState(config.SyncStatePath, state);
+    // In DryRun, never persist: the in-memory state was mutated only to plan/log what
+    // would happen. Each cycle reloads the real state and simulates against it, so a dry
+    // run reflects current reality without marking items requested or advancing cursors.
+    if (!config.DryRun)
+        SaveState(config.SyncStatePath, state);
 }
 
 static async Task RunAvailabilityScanAsync(
