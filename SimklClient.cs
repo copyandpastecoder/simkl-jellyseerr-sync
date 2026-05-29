@@ -33,7 +33,7 @@ public class SimklClient(AppConfig config, string accessToken)
 
     public async Task<List<SimklItem>> GetAllItemsAsync(string urlType, string jellyseerrType)
     {
-        var url = $"{BaseUrl}/sync/all-items/{Uri.EscapeDataString(urlType)}?client_id={Uri.EscapeDataString(config.SimklClientId)}&extended=full";
+        var url = $"{BaseUrl}/sync/all-items/{Uri.EscapeDataString(urlType)}?client_id={Uri.EscapeDataString(config.SimklClientId)}&extended=full&memos=yes";
         var json = await _http.GetStringAsync(url);
         var items = new List<SimklItem>();
 
@@ -54,10 +54,37 @@ public class SimklClient(AppConfig config, string accessToken)
             var title = media.TryGetProperty("title", out var titleElement) ? titleElement.GetString() ?? "" : "";
             var year = media.TryGetProperty("year", out var yearElement) ? ParseYear(yearElement) : 0;
             var status = entry.TryGetProperty("status", out var statusElement) ? statusElement.GetString() ?? "" : "";
-            items.Add(new SimklItem(title, year, tmdbId.Value, jellyseerrType, status));
+            var memo = ParseMemo(entry);
+            items.Add(new SimklItem(title, year, tmdbId.Value, jellyseerrType, status, memo));
         }
 
         return items;
+    }
+
+    public async Task WriteMemoAsync(int tmdbId, string mediaType, string memoText)
+    {
+        var url = $"{BaseUrl}/sync/history?client_id={Uri.EscapeDataString(config.SimklClientId)}";
+        var item = new Dictionary<string, object?>
+        {
+            ["ids"] = new Dictionary<string, object?> { ["tmdb"] = tmdbId },
+            ["status"] = "plantowatch",
+            ["memo"] = new Dictionary<string, object?> { ["text"] = memoText, ["is_private"] = true },
+        };
+        var arrayKey = mediaType == "movie" ? "movies" : "shows";
+        var body = new Dictionary<string, object?> { [arrayKey] = new[] { item } };
+
+        var json = JsonSerializer.Serialize(body);
+        using var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+        using var resp = await _http.PostAsync(url, content);
+        resp.EnsureSuccessStatusCode();
+    }
+
+    private static string? ParseMemo(JsonElement entry)
+    {
+        if (!entry.TryGetProperty("memo", out var memo) || memo.ValueKind != JsonValueKind.Object) return null;
+        if (!memo.TryGetProperty("text", out var text) || text.ValueKind != JsonValueKind.String) return null;
+        var value = text.GetString();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     private static bool TryGetFirstArray(JsonElement root, string[] names, out JsonElement array)

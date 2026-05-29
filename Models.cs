@@ -1,6 +1,6 @@
 namespace SimklJellyseerrSync;
 
-public record SimklItem(string Title, int Year, int TmdbId, string MediaType, string Status);
+public record SimklItem(string Title, int Year, int TmdbId, string MediaType, string Status, string? Memo = null);
 
 public class SimklActivities
 {

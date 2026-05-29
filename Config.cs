@@ -21,6 +21,15 @@ public class AppConfig
     /// <summary>Log what would be requested without actually requesting</summary>
     public bool DryRun { get; init; } = false;
 
+    /// <summary>Write a "ReadyToWatch &lt;date&gt;" memo to SIMKL once a download is 100% available</summary>
+    public bool MarkReadyToWatch { get; init; } = true;
+
+    /// <summary>How often to scan tracked items for completed downloads (hours). 0 disables.</summary>
+    public int AvailabilityCheckHours { get; init; } = 24;
+
+    /// <summary>Memo marker prefix written when an item becomes available</summary>
+    public string ReadyMemoPrefix { get; init; } = "ReadyToWatch";
+
     // Resolved at runtime — not in appsettings.json
     public string ConfigDir { get; private set; } = "";
 
@@ -43,7 +52,7 @@ public class AppConfig
         {
             typeof(AppConfig).GetProperty(nameof(SyncStatuses))?.SetValue(appConfig, new List<string>());
         }
-        if (appConfig.SyncStatuses.Count == 0)
+        if (appConfig.SyncStatuses!.Count == 0)
         {
             appConfig.SyncStatuses.Add("plantowatch");
         }

@@ -4,7 +4,8 @@ Automatically syncs your [SIMKL](https://simkl.com) watchlist and "Plan to Watch
 
 - ✅ Syncs movies and TV shows (and optionally anime)
 - ✅ Skips items already available, downloading, or requested in Jellyseerr
-- ✅ Requests all seasons of a TV show
+- ✅ **Per-season control via SIMKL memos** — request specific seasons of a show (e.g. `1,2,3`, `Last 3`, `Latest`) by typing a directive in the item's SIMKL memo; defaults to the first season
+- ✅ **"ReadyToWatch" marking** — when a download finishes (100% available in Jellyseerr), writes a `ReadyToWatch <date>` note to the item's SIMKL memo so you can see what's ready
 - ✅ **Smart polling** — uses SIMKL's activities endpoint to only fetch your library when something actually changed, so it can poll every couple of minutes while staying well under SIMKL's 1000 requests/day limit
 - ✅ **Removal handling** — if you drop an item or remove it from your list, the matching Jellyseerr request is deleted (downloaded files are kept)
 - ✅ Runs on a configurable schedule (default: every 2 minutes)
@@ -15,10 +16,51 @@ Automatically syncs your [SIMKL](https://simkl.com) watchlist and "Plan to Watch
 ## How It Works
 
 1. Calls the SIMKL **activities** endpoint to see whether your movies / TV / anime lists changed since the last check. If nothing changed, it does nothing (cheap, keeps you under the API rate limit).
-2. When a list changed, fetches that full library from SIMKL (each item carries its status: `plantowatch`, `watching`, `completed`, `dropped`, etc.).
-3. For items matching your configured `SyncStatuses` that aren't already in Jellyseerr, submits a request. Jellyseerr routes it to Radarr (movies) or Sonarr (TV).
+2. When a list changed, fetches that full library from SIMKL (each item carries its status: `plantowatch`, `watching`, `completed`, `dropped`, etc., plus its memo).
+3. For items matching your configured `SyncStatuses` that aren't already in Jellyseerr, submits a request. Jellyseerr routes it to Radarr (movies) or Sonarr (TV). For TV/anime, the seasons requested are chosen from the item's memo (see [Per-Season Control](#per-season-control-via-memos)).
 4. For items it previously requested that are now **dropped** or **removed from your list**, it deletes the Jellyseerr request (downloaded files are kept).
-5. Persists a small `sync_state.json` (change cursors + the set of items it requested) and sleeps for the configured interval, then repeats.
+5. On a daily pass, it checks each tracked item; once a download is 100% available in Jellyseerr it writes `ReadyToWatch <date>` to the item's SIMKL memo (the item stays in Plan to Watch).
+6. Persists a small `sync_state.json` (change cursors + the items it tracks) and sleeps for the configured interval, then repeats.
+
+---
+
+## Per-Season Control via Memos
+
+By default a TV show is requested with **its first season only**. To request specific seasons, type a directive on the **first line** of that show's **memo** in SIMKL (the small note field on each watchlist item).
+
+| Memo first line | Seasons requested |
+|---|---|
+| *(empty, or a normal note)* | First season only |
+| `All` | All seasons |
+| `1,2,3` | Seasons 1, 2, 3 |
+| `1-3` | Seasons 1 through 3 |
+| `First 2` | The first 2 seasons |
+| `Last 3` | The last 3 seasons |
+| `Latest` | The newest season only |
+| `1, Last 2` | Season 1 plus the last 2 |
+
+Rules:
+- The first line is treated as a directive **only if it starts with** a number, or `First` / `Last` / `Latest` / `All` (case-insensitive). Otherwise it's treated as a normal note and the show gets its first season.
+- Spaces don't matter: `1, 2,3`, ` 1 - 3 `, and `last  2` all work.
+- Seasons are clamped to those that actually exist; specials (season 0) are excluded.
+- Only the **first line** is read — put any other notes on later lines.
+
+> **Important:** SIMKL has no "memo changed" signal, so the tool reads the memo when the show first enters Plan to Watch. **Set the memo *before* (or at the same time as) adding the show to Plan to Watch.** Editing the memo after the show is already requested won't re-scope the existing request.
+
+---
+
+## ReadyToWatch Marking
+
+When a download finishes (Jellyseerr reports the item — and all requested seasons — 100% available), the tool appends a line to that item's SIMKL memo:
+
+```
+ReadyToWatch 2026-05-29
+```
+
+- The item **stays in Plan to Watch** (SIMKL has no "owned but unwatched" status; this keeps the status truthful while giving you a visible "it's here" marker).
+- Your season directive on line 1 is preserved; the marker is added on its own line. If the combined memo would exceed SIMKL's 140-character limit, only your free-note text is trimmed — never the directive or the marker.
+- The date is when it first became available and is set once (not updated on later scans).
+- Disable with `"MarkReadyToWatch": false`. Tune frequency with `"AvailabilityCheckHours"` (default 24).
 
 ---
 
@@ -55,6 +97,9 @@ Edit `appsettings.json`:
   "SyncStatuses":      ["plantowatch"],
   "SyncAnime":         true,
   "SyncIntervalMinutes": 2,
+  "MarkReadyToWatch":  true,
+  "AvailabilityCheckHours": 24,
+  "ReadyMemoPrefix":   "ReadyToWatch",
   "DryRun":            false
 }
 ```
@@ -68,7 +113,10 @@ Edit `appsettings.json`:
 | `SyncStatuses` | SIMKL statuses to request: `plantowatch`, `watching`, `hold` |
 | `SyncAnime` | Include anime from SIMKL (mapped to TV in Jellyseerr) |
 | `SyncIntervalMinutes` | How often to check SIMKL for changes (default `2`) |
-| `DryRun` | Set `true` to log what would be requested/deleted without changing anything |
+| `MarkReadyToWatch` | Write a `ReadyToWatch <date>` memo when a download is fully available (default `true`) |
+| `AvailabilityCheckHours` | How often to scan tracked items for completed downloads, in hours (default `24`; `0` disables) |
+| `ReadyMemoPrefix` | The marker text written to the memo (default `ReadyToWatch`) |
+| `DryRun` | Set `true` to log what would be requested/deleted/marked without changing anything |
 
 ### 4. Add to docker-compose.yml
 
@@ -133,10 +181,15 @@ SIMKL → Jellyseerr sync started  |  interval: 2min  |  statuses: plantowatch
   REQ   [movie] The Wizard of the Kremlin (2025) — tracking movie:1291659
   SKIP  [movie] Inception (2010) — already in Jellyseerr (available)
 [2026-05-29 12:00:00] tv_shows changed — syncing...
-  1 desired / 23 total tv_shows; 1 dropped
-  REQ   [tv   ] Andor (2022) — tracking tv:200720
+  2 desired / 23 total tv_shows; 1 dropped
+  REQ   [tv   ] Andor (2022) seasons[1,2] (Last 2) — tracking tv:200720
+  REQ   [tv   ] Severance (2022) seasons[1] (default (first season)) — tracking tv:95396
   DEL   [tv   ] 198174 — deleted 1 request(s) for tv:198174
-  Done — 2 requested, 1 tracked/skipped, 1 deleted, 0 errors
+  Done — 3 requested, 1 tracked/skipped, 1 deleted, 0 errors
+
+[2026-05-30 12:00:00] Availability scan — checking 4 tracked item(s) for completed downloads...
+  RDY   [movie] 1291659 — marked ReadyToWatch 2026-05-30
+  Availability scan done — 1 marked ReadyToWatch, 0 errors
 ```
 
 When nothing has changed since the last check, you'll simply see:

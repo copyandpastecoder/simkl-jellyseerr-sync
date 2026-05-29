@@ -36,7 +36,7 @@ public class JellyseerrClient
         return info.TryGetProperty("status", out var status) ? status.GetInt32() : MediaStatus.Unknown;
     }
 
-    public async Task<bool> RequestMediaAsync(SimklItem item)
+    public async Task<bool> RequestMediaAsync(SimklItem item, IReadOnlyList<int>? seasons = null)
     {
         object body;
 
@@ -46,8 +46,8 @@ public class JellyseerrClient
         }
         else
         {
-            var seasons = await GetSeasonNumbersAsync(item.TmdbId);
-            body = new { mediaType = "tv", mediaId = item.TmdbId, seasons = seasons.ToArray() };
+            var seasonList = (seasons is { Count: > 0 } ? seasons : await GetSeasonNumbersAsync(item.TmdbId)).ToArray();
+            body = new { mediaType = "tv", mediaId = item.TmdbId, seasons = seasonList };
         }
 
         var resp = await _http.PostAsJsonAsync("api/v1/request", body, JsonOpts);
@@ -82,7 +82,7 @@ public class JellyseerrClient
         return deleted;
     }
 
-    private async Task<List<int>> GetSeasonNumbersAsync(int tmdbId)
+    public async Task<List<int>> GetSeasonNumbersAsync(int tmdbId)
     {
         var resp = await _http.GetAsync($"api/v1/tv/{tmdbId}");
         if (!resp.IsSuccessStatusCode) return new();
