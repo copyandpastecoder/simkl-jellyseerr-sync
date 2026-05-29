@@ -72,9 +72,12 @@ Edit `appsettings.json`:
 
 ### 4. Add to docker-compose.yml
 
+The image is built directly from this GitHub repo on your Docker host — no registry needed. (Your host must have `git` installed so Docker can fetch the build context.)
+
 ```yaml
 simkl-jellyseerr-sync:
-  image: ghcr.io/copyandpastecoder/simkl-jellyseerr-sync:latest
+  build: https://github.com/copyandpastecoder/simkl-jellyseerr-sync.git#main
+  image: simkl-jellyseerr-sync:local
   container_name: simkl-jellyseerr-sync
   hostname: simkl-jellyseerr-sync.mymediabox
   volumes:
@@ -84,6 +87,12 @@ simkl-jellyseerr-sync:
     - media_net
   depends_on:
     - jellyseerr
+```
+
+To **update** later, just rebuild from the latest `main` and recreate:
+
+```bash
+docker compose build --pull simkl-jellyseerr-sync && docker compose up -d simkl-jellyseerr-sync
 ```
 
 ### 5. First Run — SIMKL PIN Auth
@@ -163,10 +172,10 @@ dotnet publish -c Release -r win-x64 --self-contained -o publish/win-x64
 
 ### Build the Docker image yourself
 
-If you aren't pulling a prebuilt image from a registry, build it on the host and tag it to match the `image:` line in your compose file:
+If you prefer to build from a local checkout rather than the git URL:
 
 ```bash
-docker build -t ghcr.io/copyandpastecoder/simkl-jellyseerr-sync:latest .
+docker build -t simkl-jellyseerr-sync:local .
 docker compose up -d simkl-jellyseerr-sync
 ```
 
